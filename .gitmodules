@@ -1,3 +1,6 @@
 [submodule "CAMEOX"]
 	path = CAMEOX
 	url = git@github.com:BiosecSFA/CAMEOX.git
+[submodule "pycameox"]
+	path = pycameox
+	url = git@github.com:BiosecSFA/pycameox.git
