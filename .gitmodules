@@ -1,0 +1,3 @@
+[submodule "CAMEOX"]
+	path = CAMEOX
+	url = git@github.com:BiosecSFA/CAMEOX.git
