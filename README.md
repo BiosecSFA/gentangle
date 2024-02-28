@@ -16,19 +16,9 @@ The GENTANGLE pipeline is composed of three main components:
 2) protein fitness estimation and sequence entanglement search (CAMEOs eXtended aka CAMEOX), and
 3) analysis and visualization of gene entanglement solutions.
 
-## Installation
-### GENTANGLE source code
-GENTANGLE git repository includes several submodules, so please use the `--recursive` argument when cloning the repository:
-```
-git clone --recursive https://github.com/BiosecSFA/gentangle.git
-```
-### GENTANGLE Singularity container
-
-You can download the image from [ftp://gdo-bioinformatics.ucllnl.org/gentangle/gentangle.sif](ftp://gdo-bioinformatics.ucllnl.org/gentangle/gentangle.sif) (anonymous ftp download supported). 
-
 ## Documentation
 
-Please visit the [GENTANGLE wiki](https://github.com/BiosecSFA/gentangle/wiki) for updated documentation.
+Please visit the [GENTANGLE wiki](https://github.com/BiosecSFA/gentangle/wiki) for detailed, updated documentation.
 
 ## License
 
@@ -50,7 +40,7 @@ ___
 
 If you use GENTANGLE in your research, please cite the following papers. Thanks!
 
- 1. Martí, JM, _et al._ **GENTANGLE: integrated computational design of gene entanglements**. _In preparation_. 2023. 
+ 1. Martí, JM, _et al._ **GENTANGLE: integrated computational design of gene entanglements**. bioRxiv. 2023.11.09.565696. https://doi.org/10.1101/2023.11.09.565696
 
  2. Blazejewski T, Ho HI, Wang HH. **Synthetic sequence entanglement augments stability and containment of genetic information in cells**. _Science_. 2019 Aug 9;365(6453):595-8. https://doi.org/10.1126/science.aav5477
 ___
