@@ -50,10 +50,6 @@ Thumbs.db
 *.kk
 *.???#
 *.old
-*.pdf
-*.png
-*.eps
-*.ps
 *.uml
 *.logfile
 slurm*

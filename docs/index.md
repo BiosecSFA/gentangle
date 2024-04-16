@@ -1,3 +1,6 @@
+# Manual
+Please see an updated version of the user's guide in PDF format: [GENTANGLE manual](./GENTANGLE_manual.pdf).
+
 # Output
 Please see some examples of outputs from the GENTANGLE pipeline in the following files:
 
@@ -9,4 +12,3 @@ Please see some examples of outputs from the GENTANGLE pipeline in the following
 
 
 ![Octocat](https://github.githubassets.com/images/icons/emoji/octocat.png)
-
