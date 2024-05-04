@@ -1,0 +1,799 @@
+Bootstrap: docker
+From: fedora:35
+### 
+### Title: Singularity recipe for the GENTANGLE pipeline (GPU version)
+### Updated: May 2024
+### Author: Jose Manuel Marti (martimartine1@llnl.gov)
+### Info: See %labels and %help general sections below for more information
+###
+
+##############################
+# GENERAL (GENTANGLE)
+##############################
+
+%labels
+    Author Jose Manuel Marti <martimartine1@llnl.gov>
+    Maintainer Jose Manuel Marti <martimartine1@llnl.gov>
+    Version 1.1.1_gpu
+    Respository (https://github.com/BiosecSFA/gentangle)
+    Institution LLNL (Lawrence Livermore National Laboratory)
+    Funding DOE (US Department of Energy)
+
+%environment
+    GLOBAL=variables
+    AVAILABLE="to all apps"
+	# Default global values
+	export THREADS=16
+    export OMP_NUM_THREADS=$THREADS
+    export GENTANGLE_PATH="/gentangle"
+    export CAMEOX_PATH=${GENTANGLE_PATH}/CAMEOX
+    # CAMEOX specific (ideally set in %post/%appinstall reading them from CAMEOX
+    #  and then using $SINGULARITY_ENVIRONMENT to make them available at runtime)
+	export MSAS_BASE="msas"
+	export DBS_BASE="dbs"
+    export JLDS_BASE="jlds"
+    export ENERGIES_BASE="energies"
+    export PSLS_BASE="psls"
+
+%post
+    # System stuff
+    NOW=`date`
+    echo "export NOW=\"${NOW}\"" >> $SINGULARITY_ENVIRONMENT
+	dnf upgrade -y
+	dnf update -y
+    dnf group install "standard" -y
+    dnf group install "C Development Tools and Libraries" -y
+	dnf install unzip git git-lfs cmake xeyes firefox -y
+
+    # Gentangle stuff
+    mkdir -p ~/.ssh
+    ssh-keyscan github.com >> ~/.ssh/known_hosts
+    git clone --recursive https://github.com/BiosecSFA/gentangle.git /gentangle
+    git config --system --add safe.directory /gentangle
+
+%runscript
+    echo "When container was created: $NOW"
+    echo "Arguments received: $*"
+
+%help
+    GENTANGLE (Gene Tuples ArraNGed in overLapping Elements) with GPU support
+  
+    > Integrated computational design of gene entanglements <
+    
+    GENTANGLE is a high performance containerized pipeline for the computational
+    design of two overlapping genes translated in different reading frames of
+    the genome that can be used to design and test gene entanglements.
+   
+    Please see README and Wiki on GENTANGLE git repo for detailed information:
+    https://github.com/BiosecSFA/gentangle
+  
+    NOTE: This GENTANGLE container has explicit GPU (Nvidia/CUDA) support.
+          If you do not need it or prefer a smaller image size, please   
+          download the standard gentangle image, which is one tenth the size.
+
+%test
+    echo "TEST: Check GENTANGLE's clone repo"
+    cd $GENTANGLE_PATH
+    echo "*** GIT STATUS ***"
+    git status
+    echo "*** GIT REMOTE ***"
+    git remote -v
+    echo "*** GIT LAST ***"
+    git log -1 --color HEAD
+    echo "TEST: General tests OK!"
+
+
+##############################
+# Python
+##############################
+# Dependencies: GENTANGLE
+
+%appinstall python
+	dnf install python3.10 python-pip -y
+	pip install --upgrade pip
+    # evcouplings uses deprecated sklearn! Recent numpy also problematic
+    export SKLEARN_ALLOW_DEPRECATED_SKLEARN_PACKAGE_INSTALL=True
+	pip install --upgrade biopython matplotlib numpy==1.23.2 pandas scipy scikit-learn evcouplings
+    pip install --upgrade ipykernel papermill
+
+%apprun python
+    exec python3 "$@"
+
+%apptest python
+    python3 --version
+    pip list
+
+%appenv python
+    export SOFTWARE=python3
+
+%apphelp python
+    Python3 installation with required packages for Gentangle.
+
+%applabels python
+   BESTAPP PYTHON
+
+
+##############################
+# Julia
+##############################
+# Dependencies: GENTANGLE
+
+%appinstall julia
+	# Preparation
+	export DBS=$SCIF_DATA/dbs
+	export JULIA_DEPOT_PATH=$SCIF_DATA/julia_depot
+	mkdir $DBS
+	mkdir $JULIA_DEPOT_PATH
+
+	# Core
+    dnf install julia -y
+    echo 'import Pkg; Pkg.add(["BioAlignments", "Logging", "StatsBase", "JLD", "Distributions", "BioSymbols", "NPZ", "ArgParse", "HDF5", "GZip", "LinearAlgebra", "DataFrames", "CSV","FileIO"]); Pkg.status()' >> init.jl
+    julia init.jl
+
+%apprun julia
+    exec julia -t $THREADS "$@"
+
+%apptest julia
+    julia --version
+
+%appenv julia
+    export SOFTWARE=julia
+	export JULIA_DEPOT_PATH=$SCIF_DATA/julia_depot
+
+%apphelp julia
+    Julia installation with required packages for Gentangle/CAMEOX.
+
+%applabels julia
+   BESTAPP JULIA
+
+
+##############################
+# CAMEOX
+##############################
+# Dependencies: GENTANGLE, Julia
+
+%apprun cameox
+    exec julia -t $THREADS $CAMEOX_PATH/main/cameox.jl -b $SCIF_APPDATA "$@"
+
+%apptest cameox
+    exec julia $CAMEOX_PATH/main/cameox.jl --help
+
+%appenv cameox
+    export SOFTWARE=cameox
+	export JULIA_DEPOT_PATH=$SCIF_DATA/julia_depot
+
+%apphelp cameox
+    Please see README on CAMEOX git repo for information.
+
+%applabels cameox
+   BESTAPP CAMEOX
+
+
+##############################
+# HMMER
+##############################
+# Dependencies: GENTANGLE, Python, CAMEOX
+
+%appinstall hmmer
+    wget http://eddylab.org/software/hmmer/hmmer-3.3.2.tar.gz
+    tar xvf hmmer-3.3.2.tar.gz || true
+    cd hmmer-3.3.2
+    ./configure
+    make -j $THREADS
+    make check
+    make install   
+
+%apprun hmmer
+   # Basic argument sanity check
+   if [ $# -lt 1 ]; then
+     echo "HMMER run ERROR: One mandatory argument (protein name) is required!"
+     echo "Please run the app with singularity run-help for further details."
+   exit 1
+   fi
+
+   # Parse input
+   prot=$1
+   seqdb=${2:-$SCIF_APPDATA_cameox/$DBS_BASE/uniref100.fasta}
+   iodir=${3:-$SCIF_APPDATA_cameox/$MSAS_BASE/$prot}
+   bitscore=${4:-0.5}
+   niter=${5:-5}
+   
+   # Set derived variables
+   query="$iodir/$prot.refseq.fa"  # Name pattern required!
+   tblout="$iodir/targets.tblout"
+   aligmentfile="$iodir/$prot.sto"
+   hmmprefix="$iodir/${prot}_iter"
+   aliprefix="$iodir/${prot}_iter"
+   
+   # Some checks
+   if [ ! -f "$query" ]; then
+     echo "HMMER run ERROR: Protein reference file does not exist at $query"
+     exit 2
+   fi
+   if [ ! -f "$seqdb" ]; then
+     echo "HMMER run ERROR: Sequence DB file does not exist at $seqdb"
+     exit 3
+   fi 
+   cpu=$THREADS
+   if [[ ! -z "$SLURM_CPUS_PER_TASK" ]]
+   then
+     cpu="$SLURM_CPUS_PER_TASK"
+   fi
+   
+   # Calculate scaled bitscore
+   wtseq=$(sed 1d $query)
+   seqlen=${#wtseq}
+   bitscore=$(echo "$seqlen*$bitscore" | bc)   # scale bitscore by seqlen
+   echo "HMMER run INFO: The scaled bitscore for jackhmmer is: $bitscore"
+   
+   # Use EVcouplings defaults
+   exec jackhmmer -N $niter \
+     --incT $bitscore --incdomT $bitscore -T $bitscore --domT $bitscore \
+     --popen 0.02 --pextend 0.4 --mx BLOSUM62 \
+     --tblout $tblout -A $aligmentfile --noali --notextw\
+     --chkhmm $hmmprefix --chkali $aliprefix --cpu $cpu \
+     $query $seqdb
+
+%apptest hmmer
+   exec jackhmmer -h
+
+%appenv hmmer
+    SOFTWARE=hmmer
+    export SOFTWARE
+
+%apphelp hmmer
+    This is the help for HMMER, which runs jackhmmer with the next arguments:
+	  <prot_name> [<seq_db> [<io_dir> [<bitscore> [<num_iter>]]]] 
+        with defaults:
+            <seq_db> =  ${SCIF_APPDATA_cameox}/${DBS_BASE}/uniref100.fasta
+            <io_dir> = ${SCIF_APPDATA_cameox}/${MSAS_BASE}/$prot
+            <bitscore> = 0.5
+            <num_iter> = 5
+
+%applabels hmmer
+   BESTAPP HMMER
+
+
+##############################
+# HHsuite
+##############################
+# Dependencies: GENTANGLE
+
+%appinstall hhsuite
+    git clone https://github.com/soedinglab/hh-suite.git
+    mkdir -p hh-suite/build
+    cd hh-suite/build
+    #cmake -DCMAKE_INSTALL_PREFIX=. ..
+    cmake ..
+    make -j $THREADS
+    make install
+    #export PATH="$(pwd)/bin:$(pwd)/scripts:$PATH"
+
+%apprun hhsuite
+    exec hhfilter "$@"
+
+%apptest hhsuite
+    exec hhfilter -h
+
+%appenv hhsuite
+    export SOFTWARE=hhsuite
+
+%apphelp hhsuite
+    This is the help for HHSUITE      
+
+%applabels hhsuite
+   BESTAPP HHSUITE
+
+
+##############################
+# PostProcMSA
+##############################
+# Dependencies: GENTANGLE, Python, HHsuite
+
+%appinstall ppmsa
+	cd /gentangle/pycameox
+    pip3 install --editable .
+
+%apprun ppmsa
+    exec ppmsa "$@"
+
+%apptest ppmsa
+    ppmsa --version
+
+%appenv ppmsa
+    export SOFTWARE=ppmsa
+
+%apphelp ppmsa
+    Post process MSA mandatory arguments: <protein_name> <work_dir> 
+    Use --help for detailed information about optional arguments.
+
+%applabels ppmsa
+   BESTAPP PPMSA
+
+
+##############################
+# HMMtrain
+##############################
+# Dependencies: Gentangle, CAMEOX, HMMER
+
+%appinstall hmmtrain
+	cd /gentangle/pycameox
+    pip3 install --editable .
+
+%apprun hmmtrain
+   # Basic argument sanity check
+   if [ $# -lt 1 ]; then
+     echo "HMMtrain run ERROR: 1 mandatory argument (protein name) is required!"
+     echo "Please run the app with singularity run-help for further details."
+   exit 1
+   fi
+
+   # Parse input
+   prot=$1
+   iodir=${2:-$SCIF_APPDATA_cameox/$MSAS_BASE/$prot}
+
+   # Set derived variables
+   protpath="$iodir/$prot"
+   msafile=${protpath}.fasta
+   hmmfile=${protpath}.hmm
+   
+   # Some checks
+   if [ ! -f "$msafile" ]; then
+     echo "HMMtrain run ERROR: Input fasta aligment missing at $msafile"
+     exit 2
+   fi
+   cpu=$THREADS
+   if [[ ! -z "$SLURM_CPUS_PER_TASK" ]]
+   then
+     cpu="$SLURM_CPUS_PER_TASK"
+   fi
+   
+    # Call hmmbuild
+    hmmbuild --cpu $cpu $hmmfile $msafile >> "${protpath}.hmmbld.out"
+
+    # Check if the .hmm file was created
+    if [ -f "$hmmfile" ]; then
+        echo "HMMtrain (1/2) run OK! hmmbuild was successful for $prot"
+    else
+        echo "HMMtrain (1/2) run ERROR! hmmbuild output missing for $prot"
+        exit 3
+    fi
+
+    # Call hmmpress
+    hmmpress -f $hmmfile >> "${protpath}.hmmpss.out"
+
+    # Check if the compressed files were created
+    if [ -f "${hmmfile}.h3m" ] && [ -f "${hmmfile}.h3p" ]; then
+        echo "HMMtrain (2/2) run OK! hmmpress was successful for $prot"
+    else
+        echo "HMMtrain (2/2) run ERROR! hmmpress output missing for $prot"
+    fi
+
+%apptest hmmtrain
+    hmmbuild -h
+    hmmpress -h
+
+%appenv hmmtrain
+    export SOFTWARE=hmmtrain
+
+%apphelp hmmtrain
+    Gentangle HMM (model training) branch.
+    Arguments: <protein_name> [<io_dir>] 
+      with <io_dir> default: $SCIF_APPDATA_cameox/$MSAS_BASE/$prot 
+
+%applabels hmmtrain
+   BESTAPP HMMTRAIN
+
+
+##############################
+# CCMpred
+##############################
+# Dependencies: Python
+
+%appinstall ccmpred
+    # Install CUDA support
+    wget https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda-repo-fedora35-11-8-local-11.8.0_520.61.05-1.x86_64.rpm
+    rpm -ivh cuda-repo-fedora35-11-8-local-11.8.0_520.61.05-1.x86_64.rpm
+    dnf clean all
+    dnf -y module install nvidia-driver:latest-dkms
+    dnf -y install cuda
+    # CUDA post-installation actions: mandatory
+    # Source: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#post-installation-actions
+    export PATH=/usr/local/cuda-11.8/bin${PATH:+:${PATH}}
+    export LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+    
+    # Get, configure, and build CCMpred (CMake required)
+    git clone --recursive https://github.com/soedinglab/CCMpred.git
+    cd CCMpred
+    cmake -DWITH_CUDA=ON .
+    make -j $THREADS
+    make install
+    cd ..
+
+%apprun ccmpred
+   exec $SCIF_APPROOT_ccmpred/CCMpred/bin/ccmpred "$@"
+
+%apptest ccmpred
+   exec $SCIF_APPROOT_ccmpred/CCMpred/bin/ccmpred -h
+
+%appenv ccmpred
+    SOFTWARE=ccmpred
+    export SOFTWARE
+
+%apphelp ccmpred
+    This is the help for CCMpred: all the arguments to the singularity run
+    command are directly passed to the cmmpred binary.
+
+%applabels ccmpred
+   BESTAPP CCMpred
+
+
+##############################
+# MRFtrain
+##############################
+# Dependencies: GENTANGLE, Python, CAMEOX, CCMpred
+
+%apprun mrftrain
+   # Basic argument sanity check
+   if [ $# -lt 1 ]; then
+     echo "MRFtrain run ERROR: 1 mandatory argument (protein name) is required!"
+     echo "Please run the app with singularity run-help for further details."
+   exit 1
+   fi
+
+   # Parse input
+   prot=$1
+   iodir=${2:-$SCIF_APPDATA_cameox/$MSAS_BASE/$prot}
+   niter=${3:-100}
+   gpudev=${4:-0}
+
+   # Set derived variables
+   protpath="$iodir/$prot"
+   msafile=${protpath}.fasta
+   ccmfile=${protpath}.ccm
+   rawfile=${protpath}.raw
+   matfile=${protpath}.mat
+   outfile=${protpath}.ccmprd.out
+   
+   # Some checks
+   if [ ! -f "$msafile" ]; then
+     echo "MRFtrain run ERROR: Input fasta aligment missing at $msafile"
+     exit 2
+   fi
+   
+    # Convert alignment [msa2ccm]
+    python3 $CONVALIG $msafile fasta $ccmfile
+
+    # Check if the .ccm file was created
+    if [ -f "$ccmfile" ]; then
+        echo "MRFtrain (1/2) run OK! msa2ccm was successful for $prot"
+    else
+        echo "MRFtrain (1/2) run ERROR! msa2ccm output missing for $prot"
+        exit 3
+    fi
+
+    # Call CCMpred
+    echo "MRFtrain (2/2) run: CCMpred launched (it may take time)..."
+    echo "    (You may follow CCMpred output at the bound file of $outfile)"
+    ccmpred -r $rawfile -n $niter -d $gpudev $ccmfile $matfile >> $outfile
+
+    # Check if the raw and mat files were created
+    if [ -f "$rawfile" ] && [ -f "$matfile" ]; then
+        echo "MRFtrain (2/2) run OK! CCMpred was successful for $prot"
+    else
+        echo "MRFtrain (2/2) run ERROR! CCMpred output missing for $prot"
+    fi
+
+%apptest mrftrain
+    python3 $CONVALIG
+    ccmpred -h
+
+%appenv mrftrain
+    export SOFTWARE=mrftrain
+    export CONVALIG=$SCIF_APPROOT_ccmpred/CCMpred/scripts/convert_alignment.py
+
+%apphelp mrftrain
+    Gentangle MRF (model training) branch.
+    Arguments: <protein_name> [<io_dir> [<num_iter> [<gpu_dev>]]] 
+        with defaults:
+            <io_dir> = ${SCIF_APPDATA_cameox}/${MSAS_BASE}/$prot
+            <num_iter> = 100
+            <gpu_dev> = 0
+
+%applabels mrftrain
+   BESTAPP MRFTRAIN
+
+
+##############################
+# summarize
+##############################
+# Dependencies: GENTANGLE, Julia, CAMEOX
+
+%apprun summarize
+    # Basic argument sanity check
+    if [ $# -lt 1 ]; then
+        echo "summarize run ERROR: one mandatory argument (protein) is required!"
+        echo "Please run the app with singularity run-help for further details."
+    exit 1
+    fi
+
+    # Parse input
+    prot=$1
+    BASEDIR=${2:-$SCIF_APPDATA_cameox}
+    RAW2JLD=${3:-$CAMEOX_PATH/prepare/raw2jld.jl}
+    SMMRZ=${4:-$CAMEOX_PATH/prepare/summarize.jl}
+
+    # Set derived variables
+    msafile=$BASEDIR/$MSAS_BASE/$prot/${prot}.fasta
+    rawfile=$BASEDIR/$MSAS_BASE/$prot/${prot}.raw
+    jldfile=$BASEDIR/$JLDS_BASE/${prot}.jld
+    engfile=$BASEDIR/$ENERGIES_BASE/energy_${prot}.txt
+    pllfile=$BASEDIR/$PSLS_BASE/psls_${prot}.txt
+
+    # Some checks
+    if [ ! -f "$msafile" ]; then
+        echo "Summarize run ERROR: Input fasta aligment missing at $msafile"
+        exit 2
+    fi
+    if [ ! -f "$rawfile" ]; then
+        echo "Summarize run ERROR: Input CCMpred raw file missing at $rawfile"
+        exit 3
+    fi
+
+    # Generate JLD file [raw2jld]
+    julia -t $THREADS $RAW2JLD $rawfile $jldfile
+
+    # Check if the .jld file was created
+    if [ -f "$jldfile" ]; then
+        echo "Summarize (1/2) run OK! raw2jld was successful for $prot"
+    else
+        echo "Summarize (1/2) run ERROR! raw2jld output missing for $prot"
+        exit 4
+    fi
+
+    # Call final summarization step
+    echo "Summarize (2/2) run: Summarization of energies&psls may take time..."
+    julia -t $THREADS $SMMRZ $prot $jldfile $msafile $BASEDIR
+
+    # Check if the energy and psls files were created
+    if [ -f "$engfile" ] && [ -f "$pllfile" ]; then
+        echo "Summarize (2/2) run OK! Got energy and pll files for $prot"
+    else
+        echo "Summarize (2/2) run ERROR! Missing energy or pll files for $prot"
+    fi
+
+%apptest summarize
+    julia $CAMEOX_PATH/prepare/raw2jld.jl -h
+    julia $CAMEOX_PATH/prepare/summarize.jl -h
+
+%appenv summarize
+    export SOFTWARE=summarize
+    export CONVALIG=$SCIF_APPROOT_ccmpred/CCMpred/scripts/convert_alignment.py
+  	export JULIA_DEPOT_PATH=$SCIF_DATA/julia_depot
+
+%apphelp summarize
+    Gentangle CAMEOX summarization step (prerequisite)
+    Arguments: <protein_name> [<data_base_dir> [<raw2jld_path> [<summarize_path>]]] 
+
+%applabels summarize
+   BESTAPP SUMMARIZE
+
+
+##############################
+# outparser
+##############################
+# Dependencies: GENTANGLE, Julia, CAMEOX
+
+%apprun outparser
+    # Basic argument sanity check
+    if [ $# -lt 1 ]; then
+        echo "Outparser run ERROR: One mandatory argument (runid) is required!"
+        echo "Please run the app with singularity run-help for further details."
+    exit 1
+    fi
+
+    # Parse input
+    runid=$1
+    mark_gene=${2:-aroB_pf5_uref100}
+    deg_gene=${3:-infA_pf5_uref100}
+    frame=${4:-p1}
+    fasta=${5:-all}
+    outdir=${6:-$SCIF_APPDATA_cameox/output}
+
+    # Set derived variables
+    popjldfile=$outdir/${mark_gene}_${deg_gene}_${frame}/saved_pop_${runid}.jld
+    hmmjldfile=$outdir/${mark_gene}_${deg_gene}_${frame}/saved_hmm_${runid}.jld
+    hmmjldfile_exists=0
+    popcsvfile=$outdir/${mark_gene}_${deg_gene}_${frame}/summary_${runid}.csv
+    hmmcsvfile=$outdir/${mark_gene}_${deg_gene}_${frame}/sum_hmm_${runid}.csv   
+    OUTPARSER=$CAMEOX_PATH/main/outparser.jl
+
+    # Some checks
+    if [ ! -f "$popjldfile" ]; then
+        echo "Outparser run ERROR: CAMEOX JLD output missing at $popjldfile"
+        exit 2
+    fi
+    if [ ! -f "$hmmjldfile" ]; then
+        echo "Outparser run INFO: CAMEOX HMM JLD detected at $hmmjldfile"
+        hmmjldfile_exists=1
+    fi   
+
+    # Run outparser
+    julia -t $THREADS $OUTPARSER $mark_gene $deg_gene $runid --frame $frame --fasta $fasta --output $outdir
+
+    # Check if the .csv files were created
+    if [ $hmmjldfile_exists ]; then
+        if [ -f "$hmmcsvfile" ]; then
+            echo "Outparser HMM run OK for $runid ($mark_gene and $deg_gene)!"
+        else
+            echo "Outparser HMM run ERROR! CSV output missing for HMM in $runid"
+        fi           
+    fi
+    if [ -f "$popcsvfile" ]; then
+        echo "Outparser variants run OK for $runid ($mark_gene and $deg_gene)!"
+    else
+        echo "Outparser variants run ERROR! CSV output missing for $runid"
+        exit 3
+    fi
+ 
+%apptest outparser
+    julia $CAMEOX_PATH/main/outparser.jl --help
+
+%appenv outparser
+    export SOFTWARE=outparser
+  	export JULIA_DEPOT_PATH=$SCIF_DATA/julia_depot
+
+%apphelp outparser
+    Gentangle outparser step (downstream CAMEOX)
+    Arguments: <runid> [<mark_gene> [<deg_gene> [<frame> [<fasta> [<CAMEOX_output_path>]]]]]
+        with defaults:
+            <mark_gene> = aroB_pf5_uref100
+            <deg_gene> = infA_pf5_uref100
+            <frame> = p1
+            <fasta> = all
+            <CAMEOX_output_path> = $SCIF_APPDATA_cameox/output
+    Example: singularity run --cleanenv --app outparser --mount type=bind,source=/home/user/datangle,dst=/scif/data/cameox gentangle.sif saRGGj2F aroB_pf5_uref90 infA_pf5_uref90 p1
+
+%applabels outparser
+   BESTAPP OUTPARSER 
+
+
+##############################
+# Analysis
+##############################
+# Dependencies: GENTANGLE, Python, Julia, CAMEOX, outparser
+
+%apprun analysis
+
+    # Constants
+    PAPERMILL_OPTS="--request-save-on-cell-execute --progress-bar -k python3"
+    NOTEBOOK_PATH_IN=/gentangle/notebooks/Gentangle_downstream.ipynb
+
+    # Parse input
+    protA=${1:-aroB_pf5_uref100}
+    protB=${2:-infA_pf5_uref100}
+    frame=${3:-p1}
+    pop_size_threshold=${4:-1}
+    iters_threshold=${5:-0}
+    num_erp=${6:-2}
+    sample_size=${7:-250}
+    overden_num=${8:-3}
+    overden_pen=${9:-0.2}
+    overden_bin=${10:-25}
+    outdir=${11:-$SCIF_APPDATA_cameox/output}
+ 
+    # Set derived variables
+    resdir=$outdir/${protA}_${protB}_${frame}
+    html_file=$resdir/iplot_${protA}_${protB}_rand.html
+    meta_file=$resdir/CAMEOX_${protA}_${protB}_metadata.csv
+    params_prots="-p PROTa $protA -p PROTb $protB -p FRAME $frame"
+    params_thres="-p POP_SIZE_THRESHOLD $pop_size_threshold -p ITERS_THRESHOLD $iters_threshold"
+    params_sampl="-p NUM_ERP $num_erp -p SAMPLE_SIZE $sample_size"
+    params_overd="-p OVERDEN_NUM $overden_num -p OVERDEN_PEN $overden_pen -p OVERDEN_BIN $overden_bin"
+    notebook_path_out=$resdir/Gentangle_downstream_out.ipynb
+
+    # Run downstream analysis
+    echo "*** GENTANGLE ANALYSIS STEP *** Job arguments:"
+    echo " * Output Jupyter notebook: $notebook_path_out"
+    echo " * Proteins parameters: $params_prots"
+    echo " * Thresholds parameters: $params_thres"
+    echo " * General sampling parameters: $params_sampl"
+    echo " * Overdensity sampling parameters: $params_overd"
+    echo " ** Processing notebook ..."
+    echo "WARNING! Firefox may pop-up three times (you may close it)"
+    echo " "
+    papermill ${PAPERMILL_OPTS} $NOTEBOOK_PATH_IN $notebook_path_out \
+        $params_prots $params_thres $params_sampl $params_overd
+    retval=$?
+    if [ $retval -ne 0 ]; then
+        echo "ERROR! Processing of downstream analysis notebook failed!"
+        exit 1
+    else
+        echo "Processing of downstream analysis notebook successful. Checking..."
+    fi
+
+    # Check if the 1st and last expected output files were created
+    if [ -f "$html_file" ]; then
+        echo "Initial analysis results generated!"
+        echo "    ($html_file found)"
+    else
+        echo "ERROR! No analysis results found! ($html_file missing)"
+        exit 1
+    fi           
+    if [ -f "$meta_file" ]; then
+        echo "Final analysis results generated!"
+        echo "    ($meta_file found)"
+    else
+        echo "ERROR! No final analysis results found! ($meta_file missing)"
+        exit 2
+    fi
+ 
+%apptest analysis
+    papermill ${PAPERMILL_OPTS} -h
+
+%appenv analysis
+    export SOFTWARE=analysis
+    export JULIA_DEPOT_PATH=$SCIF_DATA/julia_depot
+    export PAPERMILL_OPTS="--request-save-on-cell-execute --progress-bar -k python3"
+
+%apphelp analysis
+    Gentangle downstream CAMEOX comprehensive analysis step (includes outparser)
+    Arguments: [<mark_gene> [<deg_gene> [<frame> [<pop_size_threshold>
+     [<iters_threshold> [<num_erp> [<sample_size> 
+     [overden_num [overden_pen [overden_bin [<CAMEOX_output_path>]]]]]]]]]]]
+        with meanings:
+          Arguments related to the entanglement (also CAMEOX arguments):
+            <mark_gene>: 1st gene specified in the CAMEOX runs to analyze
+            <deg_gene>: 2nd gene specified in the CAMEOX runs to analyze
+            <frame>: frame specified in the CAMEOX runs to analyze
+          Arguments related to thresholds filtering the CAMEOX runs:
+            <pop_size_threshold>: min number of variants in a run to process it
+            <iters_threshold>: min number of iterations in a run to process it
+          Arguments related to general sampling parameters:
+            <num_erp>: number of top Entanglement Relative Positions to analyze
+            <sample_size>: number of variants to sample per criterion and ERP
+          Arguments concerning the overdensity sampling criterion:
+            <overden_num>: (Overdensity criterion) Number of overdensities to look for
+            <overden_pen> = 0.2
+            <overden_bin> = 25
+          Argument about the expected path of the base I/O directory:
+            <CAMEOX_output_path> = $SCIF_APPDATA_cameox/output       
+        with defaults:
+            <mark_gene> = aroB_pf5_uref100
+            <deg_gene> = infA_pf5_uref100
+            <frame> = p1
+            <pop_size_threshold> = 1
+            <iters_threshold> = 0
+            <num_erp> = 2
+            <sample_size> = 250
+            <overden_num> = 3
+            <overden_pen> = 0.2
+            <overden_bin> = 25
+            <CAMEOX_output_path> = $SCIF_APPDATA_cameox/output
+    Example: singularity run --app analysis --mount type=bind,source=/home/user/datangle,dst=/scif/data/cameox gentangle.sif aroB_pf5_uref90 infA_pf5_uref90 p1 500 10 4 500 4
+%applabels analysis
+   BESTAPP ANALYSIS
+
+
+##############################
+# Manual
+##############################
+# Dependencies: GENTANGLE
+
+%appinstall manual
+	dnf install firefox -y
+
+%apprun manual
+    exec firefox $GENTANGLE_PATH/docs/GENTANGLE_manual.pdf
+
+%apptest manual
+    ls -l $GENTANGLE_PATH/docs/GENTANGLE_manual.pdf
+
+%appenv manual
+    export SOFTWARE=manual
+
+%apphelp manual
+    Open local GENTANGLE user manual PDF in firefox.
+
+%applabels manual
+   BESTAPP MANUAL
