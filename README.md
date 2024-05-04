@@ -18,7 +18,7 @@ The GENTANGLE pipeline is composed of three main components:
 
 ## Documentation
 
-Please visit the [GENTANGLE wiki](https://github.com/BiosecSFA/gentangle/wiki) for detailed, updated documentation.
+Please visit the [GENTANGLE wiki](https://github.com/BiosecSFA/gentangle/wiki) for detailed, updated documentation. Alternatively, if you prefer to have all the documentation compiled into a single document, we have you covered with the [GENTANGLE manual in PDF format](https://biosecsfa.github.io/gentangle/GENTANGLE_manual.pdf).
 
 ## License
 
