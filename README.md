@@ -38,9 +38,9 @@ This work is supported by the U.S. Department of Energy, Office of Science, Offi
 
 ___
 
-If you use GENTANGLE in your research, please cite the following papers. Thanks!
+If you use GENTANGLE/CAMEOX in your research, please cite the following papers. Thanks!
 
- 1. Martí, JM, _et al._ **GENTANGLE: integrated computational design of gene entanglements**. bioRxiv. 2023.11.09.565696. https://doi.org/10.1101/2023.11.09.565696
+ 1.  Martí JM, _et al._ (2024) **GENTANGLE: integrated computational design of gene entanglements**. _Bioinformatics_; btae380. https://doi.org/10.1093/bioinformatics/btae380
 
  2. Blazejewski T, Ho HI, Wang HH. **Synthetic sequence entanglement augments stability and containment of genetic information in cells**. _Science_. 2019 Aug 9;365(6453):595-8. https://doi.org/10.1126/science.aav5477
 ___
